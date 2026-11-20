@@ -21,3 +21,5 @@ ADMIN_EMAIL=<notification recipient>
 ```
 
 Use a sender address on the domain verified with Resend. Keep the API key private. The backend prefers Resend when `RESEND_API_KEY` is set; otherwise, it uses the configured SMTP credentials. Redeploy after changing environment variables. Failed email attempts remain in the notification outbox and can be retried after the provider is configured.
+
+Transient delivery failures are retried after approximately 5, 10, 20, and 40 seconds. The API worker checks for due retries every 5 seconds. The admin notifications screen refreshes delivery statuses automatically while open.

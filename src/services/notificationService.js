@@ -114,13 +114,13 @@ export async function processNotification(notificationId) {
 
     notification.providerMessageId = await deliverEmail(notification, request);
     notification.status = 'sent';
-    notification.deliveredAt = null;
+    notification.deliveredAt = new Date();
     notification.nextRetryAt = null;
   } catch (error) {
     notification.status = notification.attempts < 5 ? 'retry_scheduled' : 'failed';
     notification.errorMessage = error.message;
     notification.nextRetryAt = notification.status === 'retry_scheduled'
-      ? new Date(Date.now() + Math.min(60 * 60 * 1000, 30 * 1000 * (2 ** (notification.attempts - 1))))
+      ? new Date(Date.now() + Math.min(60 * 1000, 5 * 1000 * (2 ** (notification.attempts - 1))))
       : null;
     console.error(`Notification ${notification._id} failed:`, error.message);
   }
@@ -168,7 +168,7 @@ export function startNotificationWorker() {
 
   const timer = setInterval(() => {
     run().catch((error) => console.error('Notification worker failed:', error.message));
-  }, 30 * 1000);
+  }, 5 * 1000);
   timer.unref();
   run().catch((error) => console.error('Initial notification worker run failed:', error.message));
   return timer;

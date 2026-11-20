@@ -343,9 +343,48 @@ test('email notifications can be sent through the Resend HTTPS API', async () =>
     const result = await processNotification(notification._id);
     assert.equal(result.status, 'sent');
     assert.equal(result.providerMessageId, 're_test_message');
+    assert.ok(result.deliveredAt instanceof Date);
     assert.equal(outboundRequest.url, 'https://api.resend.com/emails');
     assert.equal(outboundRequest.options.method, 'POST');
     assert.equal(outboundRequest.options.headers.Authorization, 'Bearer test-resend-key');
+  } finally {
+    if (previous.RESEND_API_KEY === undefined) delete process.env.RESEND_API_KEY;
+    else process.env.RESEND_API_KEY = previous.RESEND_API_KEY;
+    if (previous.EMAIL_FROM === undefined) delete process.env.EMAIL_FROM;
+    else process.env.EMAIL_FROM = previous.EMAIL_FROM;
+    globalThis.fetch = previous.fetch;
+  }
+});
+
+test('transient email delivery failures are scheduled for a quick retry', async () => {
+  const previous = {
+    RESEND_API_KEY: process.env.RESEND_API_KEY,
+    EMAIL_FROM: process.env.EMAIL_FROM,
+    fetch: globalThis.fetch,
+  };
+  process.env.RESEND_API_KEY = 'test-resend-key';
+  process.env.EMAIL_FROM = 'Ikafe Haven <notifications@example.com>';
+  globalThis.fetch = async () => new Response(JSON.stringify({ message: 'Temporary provider error.' }), {
+    status: 503,
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  try {
+    const [{ default: Notification }, { processNotification }] = await Promise.all([
+      import('../src/models/Notification.js'),
+      import('../src/services/notificationService.js'),
+    ]);
+    const notification = await Notification.create({
+      purchaseRequestId: firstRequestId,
+      recipient: 'recipient@test.local',
+      channel: 'email',
+      status: 'pending',
+    });
+    const result = await processNotification(notification._id);
+    const retryDelay = result.nextRetryAt.getTime() - Date.now();
+    assert.equal(result.status, 'retry_scheduled');
+    assert.equal(result.attempts, 1);
+    assert.ok(retryDelay > 0 && retryDelay <= 5000);
   } finally {
     if (previous.RESEND_API_KEY === undefined) delete process.env.RESEND_API_KEY;
     else process.env.RESEND_API_KEY = previous.RESEND_API_KEY;
