@@ -15,18 +15,67 @@ const getRequest = async (requestId) =>
   PurchaseRequest.findById(requestId).populate('requestedBy');
 
 export const isEmailConfigured = () => {
+  const hasSender = Boolean(process.env.EMAIL_FROM);
+  const hasResend = Boolean(process.env.RESEND_API_KEY);
+  const hasSmtp = Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASSWORD);
   return Boolean(
-    process.env.SMTP_HOST &&
-    process.env.SMTP_USER &&
-    process.env.SMTP_PASSWORD &&
-    process.env.EMAIL_FROM
+    hasSender &&
+    (hasResend || hasSmtp)
   );
 };
+
+function buildEmail(notification, request) {
+  const rows = request.items
+    .map((item) => `<li>${escapeHtml(item.itemNameSnapshot)} — ${escapeHtml(item.quantityRequested)} ${escapeHtml(item.unitSnapshot)}</li>`)
+    .join('');
+  const dashboardUrl = `${process.env.CLIENT_URL || 'http://localhost:5173'}/admin/request/${request._id}`;
+  const isStatusUpdate = notification.notificationType !== 'request_submitted';
+  return {
+    subject: `${isStatusUpdate ? 'Purchase request update' : 'New purchase request'} ${request.requestNumber}`,
+    html: `<div style="font-family:Arial,sans-serif;max-width:640px;margin:auto"><h2>${isStatusUpdate ? 'Purchase request update' : 'New restaurant purchase request'}</h2><p><strong>${escapeHtml(request.requestNumber)}</strong></p><p>Requested by ${escapeHtml(request.requestedBy?.fullName || 'Employee')} (${escapeHtml(request.department)})</p><ul>${rows}</ul><p>${escapeHtml(request.notes || 'No additional notes.')}</p><p>Status: ${escapeHtml(request.status)}</p>${request.rejectionReason ? `<p>Reason: ${escapeHtml(request.rejectionReason)}</p>` : ''}<a href="${escapeHtml(dashboardUrl)}">Open request</a></div>`,
+  };
+}
+
+async function deliverWithResend(notification, email) {
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: process.env.EMAIL_FROM,
+      to: [notification.recipient],
+      subject: email.subject,
+      html: email.html,
+    }),
+    signal: AbortSignal.timeout(15000),
+  });
+
+  let result;
+  try {
+    result = await response.json();
+  } catch {
+    throw new Error(`Resend returned an invalid response (HTTP ${response.status}).`);
+  }
+  if (!response.ok) {
+    throw new Error(result.message || result.name || `Resend rejected the email (HTTP ${response.status}).`);
+  }
+  if (!result.id) {
+    throw new Error('Resend accepted the request without returning an email ID.');
+  }
+  return result.id;
+}
 
 async function deliverEmail(notification, request) {
   const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, EMAIL_FROM } = process.env;
   if (!isEmailConfigured() || !notification.recipient) {
-    throw new Error('Email is not configured. Set SMTP_HOST, SMTP_USER, SMTP_PASSWORD, ADMIN_EMAIL and EMAIL_FROM.');
+    throw new Error('Email is not configured. Set EMAIL_FROM and either RESEND_API_KEY or SMTP_HOST, SMTP_USER and SMTP_PASSWORD.');
+  }
+
+  const email = buildEmail(notification, request);
+  if (process.env.RESEND_API_KEY) {
+    return deliverWithResend(notification, email);
   }
 
   const transporter = nodemailer.createTransport({
@@ -34,20 +83,15 @@ async function deliverEmail(notification, request) {
     port: Number(SMTP_PORT || 587),
     secure: process.env.SMTP_SECURE === 'true',
     auth: { user: SMTP_USER, pass: SMTP_PASSWORD },
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 15000,
   });
-
-  const rows = request.items
-    .map((item) => `<li>${escapeHtml(item.itemNameSnapshot)} — ${escapeHtml(item.quantityRequested)} ${escapeHtml(item.unitSnapshot)}</li>`)
-    .join('');
-  const dashboardUrl = `${process.env.CLIENT_URL || 'http://localhost:5173'}/admin/request/${request._id}`;
-  const isStatusUpdate = notification.notificationType !== 'request_submitted';
   const result = await transporter.sendMail({
     from: EMAIL_FROM,
     to: notification.recipient,
-    subject: `${isStatusUpdate ? 'Purchase request update' : 'New purchase request'} ${request.requestNumber}`,
-    html: `<div style="font-family:Arial,sans-serif;max-width:640px;margin:auto"><h2>${isStatusUpdate ? 'Purchase request update' : 'New restaurant purchase request'}</h2><p><strong>${escapeHtml(request.requestNumber)}</strong></p><p>Requested by ${escapeHtml(request.requestedBy?.fullName || 'Employee')} (${escapeHtml(request.department)})</p><ul>${rows}</ul><p>${escapeHtml(request.notes || 'No additional notes.')}</p><p>Status: ${escapeHtml(request.status)}</p>${request.rejectionReason ? `<p>Reason: ${escapeHtml(request.rejectionReason)}</p>` : ''}<a href="${escapeHtml(dashboardUrl)}">Open request</a></div>`,
+    ...email,
   });
-
   return result.messageId;
 }
 

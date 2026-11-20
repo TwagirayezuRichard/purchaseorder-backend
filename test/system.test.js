@@ -278,18 +278,20 @@ test('authentication, role authorization, requests, approvals, and purchase prog
   assert.equal(Object.hasOwn(settings.data, 'whatsappConfigured'), false);
 });
 
-test('notification settings require authorized SMTP credentials', async () => {
+test('notification settings accept SMTP or Resend credentials', async () => {
   const previous = {
     SMTP_USER: process.env.SMTP_USER,
     EMAIL_FROM: process.env.EMAIL_FROM,
     SMTP_HOST: process.env.SMTP_HOST,
     SMTP_PASSWORD: process.env.SMTP_PASSWORD,
+    RESEND_API_KEY: process.env.RESEND_API_KEY,
   };
   Object.assign(process.env, {
     SMTP_USER: 'sender@test.local',
     EMAIL_FROM: 'sender@test.local',
     SMTP_HOST: 'smtp.gmail.com',
     SMTP_PASSWORD: 'test-app-password',
+    RESEND_API_KEY: '',
   });
 
   try {
@@ -299,10 +301,56 @@ test('notification settings require authorized SMTP credentials', async () => {
     process.env.SMTP_PASSWORD = '';
     const withoutPassword = await request('/settings/notifications', { cookie: adminCookie });
     assert.equal(withoutPassword.data.emailConfigured, false);
+    process.env.RESEND_API_KEY = 'test-resend-key';
+    const withResend = await request('/settings/notifications', { cookie: adminCookie });
+    assert.equal(withResend.data.emailConfigured, true);
   } finally {
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+  }
+});
+
+test('email notifications can be sent through the Resend HTTPS API', async () => {
+  const previous = {
+    RESEND_API_KEY: process.env.RESEND_API_KEY,
+    EMAIL_FROM: process.env.EMAIL_FROM,
+    fetch: globalThis.fetch,
+  };
+  process.env.RESEND_API_KEY = 'test-resend-key';
+  process.env.EMAIL_FROM = 'Ikafe Haven <notifications@example.com>';
+  let outboundRequest;
+  globalThis.fetch = async (url, options) => {
+    outboundRequest = { url, options };
+    return new Response(JSON.stringify({ id: 're_test_message' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+
+  try {
+    const [{ default: Notification }, { processNotification }] = await Promise.all([
+      import('../src/models/Notification.js'),
+      import('../src/services/notificationService.js'),
+    ]);
+    const notification = await Notification.create({
+      purchaseRequestId: firstRequestId,
+      recipient: 'recipient@test.local',
+      channel: 'email',
+      status: 'pending',
+    });
+    const result = await processNotification(notification._id);
+    assert.equal(result.status, 'sent');
+    assert.equal(result.providerMessageId, 're_test_message');
+    assert.equal(outboundRequest.url, 'https://api.resend.com/emails');
+    assert.equal(outboundRequest.options.method, 'POST');
+    assert.equal(outboundRequest.options.headers.Authorization, 'Bearer test-resend-key');
+  } finally {
+    if (previous.RESEND_API_KEY === undefined) delete process.env.RESEND_API_KEY;
+    else process.env.RESEND_API_KEY = previous.RESEND_API_KEY;
+    if (previous.EMAIL_FROM === undefined) delete process.env.EMAIL_FROM;
+    else process.env.EMAIL_FROM = previous.EMAIL_FROM;
+    globalThis.fetch = previous.fetch;
   }
 });
