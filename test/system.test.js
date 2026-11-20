@@ -65,7 +65,14 @@ test('authentication, role authorization, requests, approvals, and purchase prog
     body: { email: 'admin@test.local', password: 'temporary-password-for-testing' },
   });
   assert.equal(adminLogin.response.status, 200);
+  assert.ok(adminLogin.data.token);
   adminCookie = adminLogin.response.headers.get('set-cookie').split(';')[0];
+
+  const bearerSession = await request('/auth/me', {
+    headers: { Authorization: `Bearer ${adminLogin.data.token}` },
+  });
+  assert.equal(bearerSession.response.status, 200);
+  assert.equal(bearerSession.data.email, 'admin@test.local');
 
   const categories = await request('/categories', { cookie: adminCookie });
   assert.equal(categories.response.status, 200);
