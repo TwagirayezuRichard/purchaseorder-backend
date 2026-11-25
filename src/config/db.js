@@ -9,8 +9,8 @@ export async function connectDatabase() {
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       await mongoose.connect(process.env.MONGO_URI, {
-        serverSelectionTimeoutMS: 12000,
-        connectTimeoutMS: 10000,
+        serverSelectionTimeoutMS: 5000,
+        connectTimeoutMS: 5000,
       });
       console.log('Connected to MongoDB');
       return;

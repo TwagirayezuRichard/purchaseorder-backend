@@ -16,6 +16,10 @@ const signToken = (user) =>
     { expiresIn: '8h' }
   );
 
+const isDatabaseUnavailable = (error) =>
+  ['MongooseServerSelectionError', 'MongoServerSelectionError', 'MongoNetworkError', 'MongoNetworkTimeoutError', 'MongoTimeoutError']
+    .includes(error.name);
+
 export const login = async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -24,7 +28,10 @@ export const login = async (req, res) => {
       return res.status(400).json({ message: 'Email and password are required.' });
     }
 
-    const user = await User.findOne({ email: String(email).trim().toLowerCase() });
+    const user = await User.findOne({ email: String(email).trim().toLowerCase() })
+      .select('_id email fullName role department isActive passwordHash')
+      .maxTimeMS(5000)
+      .lean();
 
     if (!user || !user.isActive || !(await bcrypt.compare(String(password), user.passwordHash))) {
       return res.status(401).json({ message: 'Invalid login credentials.' });
@@ -51,6 +58,9 @@ export const login = async (req, res) => {
     });
   } catch (error) {
     console.error('Login failed:', error.message);
+    if (isDatabaseUnavailable(error) || error.code === 50) {
+      return res.status(503).json({ message: 'Sign-in is temporarily unavailable while the database reconnects. Please try again shortly.' });
+    }
     return res.status(500).json({ message: 'Unable to log in right now.' });
   }
 };
